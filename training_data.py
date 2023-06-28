@@ -66,6 +66,15 @@ class TrainingData:
             parts.append(part)
         return parts
 
+    @classmethod
+    def join(self, data):
+        all_data = TrainingData(output_norm=data[0].output_norm)
+        all_data.index = []
+        for d in data:
+            all_data.index += d.index
+        all_data.image_shape = data[0].image_shape
+        return all_data
+
 
 class Normalizer:
     def __init__(self, range):

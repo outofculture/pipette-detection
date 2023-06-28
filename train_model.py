@@ -1,7 +1,6 @@
 import os, argparse
 from training_data import TrainingData, Normalizer
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--training-data', type=str, help="path to training data")
 parser.add_argument('--save-path', type=str, default=None, help="path to save model, weights, history, and configuration")
@@ -17,6 +16,7 @@ args = parser.parse_args()
 
 if os.path.exists(args.save_path):
     raise Exception(f"Save path {args.save_path} already exists")
+
 
 # imports slowly due to tensorflow; wait until after argument parsing to import
 from model import PipetteDetectionModel

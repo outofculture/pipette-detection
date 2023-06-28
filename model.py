@@ -52,7 +52,7 @@ class TrainingHistory:
 
 
 class PeriodicValidation(keras.callbacks.Callback):
-    def __init__(self, n_iter, history_file, training_data, validation_data, threshold=0.0001, smoothing=0.9):
+    def __init__(self, n_iter, history_file, training_data, validation_data, threshold=1e-5, smoothing=0.9):
         self._n_iter = n_iter
         self._training_data = training_data
         self._validation_data = validation_data[:]
@@ -116,9 +116,10 @@ class PeriodicModelSave(keras.callbacks.Callback):
 
 class PipetteDetectionModel:
     def __init__(self, model_opts=None, load_model=None):
-        self.model_opts = {'model_file': load_model} if model_opts is None else model_opts
+        self.model_opts = {'initial_model_path': load_model} if model_opts is None else model_opts
+        
         if load_model is not None:
-            self.model = keras.models.load_model(load_model)
+            self.model = keras.models.load_model(os.path.join(load_model, 'fit_model'))
         else:
             self.model = self.create_model(**({} if model_opts is None else model_opts))
         print(self.model.summary())
@@ -201,5 +202,6 @@ class PipetteDetectionModel:
             )
         finally:
             if save_path is not None:
+                print("Saving final model..")
                 self.model.save_weights(weights_path)
                 self.model.save(os.path.join(save_path, 'fit_model'))
