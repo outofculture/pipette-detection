@@ -1,0 +1,5 @@
+training_data
+models
+conda_env
+__pycache__
+*checkpoint.ipynb

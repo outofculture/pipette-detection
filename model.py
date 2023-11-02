@@ -1,117 +1,6 @@
-import os, gc, json
-import numpy as np
+import os, json
 from tensorflow import keras
-from tensorflow.keras import layers
-
-
-def below_threshold(y_true, y_pred, threshold=0.1):
-    kb = keras.backend
-    diff = kb.abs(y_true - y_pred)
-    return kb.mean(kb.cast(kb.all(diff < threshold, axis=-1), 'float32'))
-    
-
-class TrainingHistory:
-    """Stores history of train/validation loss during training"""
-    def __init__(self, history_file=None):
-        self.history_file = history_file
-        self.history = {'batch': [], 'train_mse': [], 'val_mse': []}
-        if history_file is not None and os.path.exists(history_file):
-            with open(history_file, 'r') as fh:
-                self.history = json.load(fh)
-
-    @property
-    def batch(self):
-        return self.history['batch']
-    
-    @property
-    def train_mse(self):
-        return self.history['train_mse']
-    
-    @property
-    def val_mse(self):
-        return self.history['val_mse']
-    
-    def append(self, batch, train_mse, val_mse):
-        self.history['batch'].append(batch)
-        self.history['train_mse'].append(train_mse)
-        self.history['val_mse'].append(val_mse)
-        self.save()        
-
-    def save(self):
-        if self.history_file is not None:
-            with open(self.history_file, 'w') as fh:
-                hist = {k:(v.tolist() if isinstance(v, np.ndarray) else v) for k,v in self.history.items()}
-                json.dump(hist, fh)
-
-    def get_slopes(self, key, size=5):
-        x = np.array(self.history['batch'][-size:])
-        y = np.vstack(self.history[key][-size:])
-        if len(x) < 2:
-            return None
-        return [np.polyfit(x, y[:,i], deg=1)[0] for i in range(y.shape[1])]
-
-
-class PeriodicValidation(keras.callbacks.Callback):
-    def __init__(self, n_iter, history_file, training_data, validation_data, threshold=1e-5, smoothing=0.9):
-        self._n_iter = n_iter
-        self._training_data = training_data
-        self._validation_data = validation_data[:]
-        assert self._validation_data is not None
-        self.history = TrainingHistory(history_file)
-        self.threshold = threshold
-        self.smoothing = smoothing
-        keras.callbacks.Callback.__init__(self)
-        
-    def compute_mse(self, actual_pos, predicted_pos):
-        full_mse = np.mean(np.square(actual_pos - predicted_pos))
-        xy_mse = np.mean(np.square(actual_pos[:, 1:] - predicted_pos[:, 1:]))
-        z_mse = np.mean(np.square(actual_pos[:, 0] - predicted_pos[:, 0]))
-        return [full_mse, xy_mse, z_mse]
-    
-    def on_train_batch_end(self, batch, logs=None):
-        if batch % self._n_iter == 0:
-            self.run_validation(batch)
-            self.history.save()
-
-    def run_validation(self, batch):
-        print(f"\nBatch {batch}")
-
-        if self._training_data.last_batch is not None:
-            train_images, train_pos = self._training_data.last_batch        
-            pred_train_pos = self.model.predict(train_images, verbose=0)
-            train_mse = self.compute_mse(train_pos, pred_train_pos)
-        else:
-            train_mse = None
-        
-        val_images, val_pos = self._validation_data
-        pred_val_pos = self.model.predict(val_images, verbose=0)
-        val_mse = self.compute_mse(val_pos, pred_val_pos)
-
-        self.history.append(batch, train_mse, val_mse)
-
-        train_slopes = self.history.get_slopes('train_mse')
-        print(f"    Training MSE (xyz, xy, z): {train_mse}  Slopes: {train_slopes}")
-        val_slopes = self.history.get_slopes('val_mse')
-        print(f"  Validation MSE (xyz, xy, z): {val_mse}  Slopes: {val_slopes}")
-
-        if len(self.history.batch) >= 5 and np.all(np.array(val_slopes) > -self.threshold):
-            print(f"Validation loss slopes crossed threshold: {val_slopes}; terminating training early")
-            self.model.stop_training = True
-        
-        gc.collect() 
-        keras.backend.clear_session()
-
-
-class PeriodicModelSave(keras.callbacks.Callback):
-    def __init__(self, n_iter, filename):
-        self._n_iter = n_iter
-        self.filename = filename
-        keras.callbacks.Callback.__init__(self)
-        
-    def on_train_batch_end(self, batch, logs=None):
-        if batch % self._n_iter == 0:
-            print(f"saving weigts to {self.filename}")
-            self.model.save_weights(self.filename)
+from training import PeriodicValidation, PeriodicModelSave
 
 
 class PipetteDetectionModel:
@@ -155,7 +44,36 @@ class PipetteDetectionModel:
     def save_model(self, model_file):
         self.model.save_model(model_file)
 
-    def fit(self, training_data, validation_data, train_depth, learning_rate=None, batch_size=64, epochs=1, save_path=None, val_interval=100, save_interval=1000):
+    def fit(self, training_data, validation_data, train_depth, optimizer=None, 
+            learning_rate=None, batch_size=64, rate_scheduler=None, epochs=1, 
+            save_path=None, val_interval=100, save_interval=1000):
+        """Fit the model to *training_data* and validate on *validation_data*.
+
+        Parameters
+        ----------
+        training_data : TrainingData
+            Training data to fit to
+        validation_data : TrainingData
+            Validation data to validate on
+        train_depth : float
+            Fraction of the model layers after which to begin training (0.0 = all layers, 1.0 = no layers)
+        optimizer : keras.optimizers.Optimizer | None
+            Optimizer to use for training (default: Adam)
+        learning_rate : float
+            Learning rate to use for training
+        batch_size : int
+            Batch size to use for training
+        rate_scheduler : dict | None
+            Options to generate a learning rate scheduler {'decay': 0.9, 'delay': 2}
+        epochs : int
+            Number of epochs to train for
+        save_path : str
+            Path to save the model to
+        val_interval : int
+            Number of batches between validation checks
+        save_interval : int
+            Number of batches between model saves
+        """
         if save_path is not None:
             assert not os.path.exists(save_path), f"Save path {save_path} already exists"
             os.makedirs(save_path)
@@ -176,8 +94,13 @@ class PipetteDetectionModel:
         for i,layer in enumerate(base_model.layers):
             layer.trainable = i > len(base_model.layers) * train_depth
 
+        if optimizer is None:
+            optimizer_args = {}
+            if learning_rate is not None:
+                optimizer_args['learning_rate'] = learning_rate
+            otimizer = keras.optimizers.Adam(**optimizer_args)
         self.model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate), 
+            optimizer=optimizer, 
             loss='mse',
         )
 
@@ -188,12 +111,21 @@ class PipetteDetectionModel:
             validation_data=validation_data,
         )
         callbacks = [self.validator]
+
+        if rate_scheduler is not None:
+            def scheduler(epoch, learning_rate):
+                if epoch < rate_scheduler['delay']:
+                    return learning_rate
+                else:
+                  return learning_rate * rate_scheduler['decay']
+            callbacks.append(keras.callbacks.LearningRateScheduler(scheduler))
+
         weights_path = os.path.join(save_path, 'fit_weights')
         if save_path is not None:
             callbacks.append(PeriodicModelSave(save_interval, weights_path))
 
         try:
-            self.model.fit(
+            self.model.fit(    # convert _ to - for kwds
                 training_data.generator(batch_size=batch_size), 
                 steps_per_epoch=len(training_data)//batch_size, 
                 epochs=epochs, 
@@ -202,6 +134,7 @@ class PipetteDetectionModel:
             )
         finally:
             if save_path is not None:
-                print("Saving final model..")
+                full_save_path = os.path.join(save_path, 'fit_model')
+                print(f"Saving final model to {full_save_path}..")
                 self.model.save_weights(weights_path)
-                self.model.save(os.path.join(save_path, 'fit_model'))
+                self.model.save(full_save_path)
