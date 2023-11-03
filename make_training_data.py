@@ -8,18 +8,23 @@ import numpy as np
 import scipy.ndimage
 from PIL import Image
 from tqdm import tqdm
+import MetaArray
 
 
 class PipetteTemplate:
     def __init__(self, npz_file):
         data = np.load(npz_file)
-        self.image = data['image_data']
+        self.file = npz_file
+        self.image = data['image_data'] / data['image_data'].max()
+        # Set background to 0 (right side of template image should be all background)
+        self.image -= self.image[:, :, -10:].mean(axis=1).mean(axis=1)[:, None, None] 
         self.pos = data['pipette_pos']
         self.z = data['z_um']
         self.shape = self.image.shape
 
-    def get_image(self, z=0):
+    def get_image(self, z=0, flip=True):
         """Return template image with the closest possible Z value, along with 3D pipette position (z_um, row, col)
+        If flip is True, randomly flip vertically around the pipette tip
 
         If z is None, choose randomly
         """
@@ -27,7 +32,16 @@ class PipetteTemplate:
             ind = np.random.randint(self.image.shape[0])
         else:
             ind = np.argmin(np.abs(self.z - z))
-        return self.image[ind], np.array((self.z[ind],) + tuple(self.pos))
+
+        img = self.image[ind]
+        pos = np.array((self.z[ind],) + tuple(self.pos))
+
+        # randomly flip vertically around the pipette tip
+        if flip and np.random.random() > 0.5:
+            img = img[::-1]
+            pos[1] = img.shape[0] - pos[1]
+
+        return img, pos
 
     def add_to_image(self, z, dst_arr, pip_pos, amp=1):
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
@@ -36,7 +50,7 @@ class PipetteTemplate:
         Return chosen Z position.
         """
         template_arr, (template_z_um, template_row, template_col) = self.get_image(z)
-        offset = np.array(pip_pos) - [template_row, template_col]
+        offset = (np.array(pip_pos) - [template_row, template_col]).astype(int)
         
         dst_rgn = np.array([offset, np.array(offset) + template_arr.shape])
         dst_rgn = np.clip(dst_rgn, 0, dst_arr.shape)
@@ -48,87 +62,160 @@ class PipetteTemplate:
         return template_z_um
 
 
-
-def make_noise(amplitudes, radii, shape):
-    """Return a gaussian-smoothed noise image.
+class PipetteTemplates:
+    """Loads multiple PipetteTemplate files and allows sampling from them
     """
-    shape = np.array(shape)
-    total = np.zeros(shape)
-    for amplitude, radius in zip(amplitudes, radii):
-        if radius > 10:
-            # large radius gaussian smoothing is slow, so speed up by smoothing a smaller image, then zooming 
-            scale = radius / 2
-            radius = 2
-        else:
-            scale = 1
-        # generate noise
-        n = np.random.normal(size=(shape//scale).astype(int))
-        # gaussian smoothing
-        if radius != 0:
-            n = scipy.ndimage.gaussian_filter(n, (radius, radius))
-        # normalize
-        n *= amplitude / n.max()
-        # scale up if needed
-        if scale != 1:
-            z = shape / n.shape
-            n = scipy.ndimage.zoom(n, z)
-        total += n
-    return total
+    def __init__(self, npz_files):
+        self.templates = [PipetteTemplate(f) for f in npz_files]
 
-def make_structured_noise(shape, edge, edge_frac, noise_radii, noise_amplitudes, sin_shift=0.1, noise_exponent=2):
-    shape = np.array(shape, dtype=int)
-    edge = np.array(edge, dtype=int)
-    noise = make_noise(noise_amplitudes, noise_radii, shape+np.abs(edge)) 
-    noise = np.sin(1 / (sin_shift + noise**noise_exponent))
+    def get_image(self, z=None):
+        """Select a random template and return image with the closest possible 
+        Z value, along with 3D pipette position (z_um, row, col)
 
-    starta = np.clip(edge, 0, np.inf).astype(int)
-    startb = np.clip(-edge, 0, np.inf).astype(int)
-    a = noise[starta[0]:starta[0]+shape[0], starta[1]:starta[1]+shape[1]]
-    b = noise[startb[0]:startb[0]+shape[0], startb[1]:startb[1]+shape[1]]    
-    noise = a - edge_frac*b
+        If z is None, choose randomly
+        """
+        template = np.random.choice(self.templates)
+        img, pos = template.get_image(z)
+        return img, pos
+
+    def add_to_image(self, z, dst_arr, pip_pos, amp=1):
+        """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
+        ignoring non-overlapping areas.
+        
+        Return chosen Z position.
+        """
+        template = np.random.choice(self.templates)
+        return template.add_to_image(z, dst_arr, pip_pos, amp)
+
+
+class NoiseData:
+    """List of .ma files containing background noise to mix into training data
+    """
+    def __init__(self, files):
+        self.files = files
+        self.data = None
     
-    return noise
+    def _load_noise(self):
+        if self.data is None:
+            self.data = [MetaArray.MetaArray(file=nf).asarray() for nf in self.files]
+        return self.data
+
+    def get_noise(self, size: int, noise_amp: float):
+        all_noise = self._load_noise()
+        # select a random noise file
+        noise = all_noise[np.random.randint(0, len(all_noise))]
+        # select a random plane
+        noise = noise[np.random.randint(0, len(noise))]
+        # select a random chunk
+        i = np.random.randint(0, noise.shape[0] - size)
+        j = np.random.randint(0, noise.shape[1] - size)
+        noise = noise[i:i+size, j:j+size]
+        # randomly flip / rotate
+        if np.random.random() > 0.5:
+            noise = noise[::-1]
+        noise = np.rot90(noise, np.random.randint(0, 3))
+        # normalize
+        noise -= noise.min()
+        noise = noise * (noise_amp / noise.max())
+
+        return noise
 
 
-def make_training_data(shape:Tuple[float], template:PipetteTemplate, difficulty:float):
-    radius = shape[0] * (0.1 + difficulty * 0.3)
+class NoiseGenerator(NoiseData):
+    """Generate random noise"""
+    def __init__(self, noise_radii, noise_amplitudes, sin_shift=0.1, noise_exponent=2):
+        self.noise_radii = noise_radii
+        self.noise_amplitudes = noise_amplitudes
+        self.sin_shift = sin_shift
+        self.noise_exponent = noise_exponent
+
+    def get_noise(self, size: int, noise_amp: float):
+        # structured noise to look like cells / neuropil    
+        str_noise_len = 3
+        image = NoiseGenerator.make_structured_noise(
+            shape=(size, size),
+            edge=np.random.normal(size=2, scale=3), 
+            edge_frac=np.random.normal(scale=0.2, loc=1), 
+            noise_radii=np.random.uniform(1, 50, size=str_noise_len), 
+            noise_amplitudes=10**np.random.normal(size=str_noise_len, loc=noise_amp, scale=0.2),
+            sin_shift=np.random.uniform(0.05, 0.3),
+            noise_exponent=2,
+        )
+        # unstructured noise at various scales
+        image += NoiseGenerator.make_noise(
+            shape=(size, size),
+            amplitudes=10**np.random.normal(size=3, loc=noise_amp, scale=0.2),
+            radii=[
+                np.random.normal(loc=100, scale=30),
+                np.random.normal(loc=10, scale=3),
+                np.random.normal(loc=2, scale=1),
+            ],
+        )
+        return image
+
+    @staticmethod
+    def make_noise(amplitudes, radii, shape):
+        """Return a gaussian-smoothed noise image.
+        """
+        shape = np.array(shape)
+        total = np.zeros(shape)
+        for amplitude, radius in zip(amplitudes, radii):
+            if radius > 10:
+                # large radius gaussian smoothing is slow, so speed up by smoothing a smaller image, then zooming 
+                scale = radius / 2
+                radius = 2
+            else:
+                scale = 1
+            # generate noise
+            n = np.random.normal(size=(shape//scale).astype(int))
+            # gaussian smoothing
+            if radius != 0:
+                n = scipy.ndimage.gaussian_filter(n, (radius, radius))
+            # normalize
+            n *= amplitude / n.max()
+            # scale up if needed
+            if scale != 1:
+                z = shape / n.shape
+                n = scipy.ndimage.zoom(n, z)
+            total += n
+        return total
+
+    @staticmethod
+    def make_structured_noise(shape, edge, edge_frac, noise_radii, noise_amplitudes, sin_shift=0.1, noise_exponent=2):
+        shape = np.array(shape, dtype=int)
+        edge = np.array(edge, dtype=int)
+        noise = NoiseGenerator.make_noise(noise_amplitudes, noise_radii, shape+np.abs(edge)) 
+        noise = np.sin(1 / (sin_shift + noise**noise_exponent))
+
+        starta = np.clip(edge, 0, np.inf).astype(int)
+        startb = np.clip(-edge, 0, np.inf).astype(int)
+        a = noise[starta[0]:starta[0]+shape[0], starta[1]:starta[1]+shape[1]]
+        b = noise[startb[0]:startb[0]+shape[0], startb[1]:startb[1]+shape[1]]    
+        noise = a - edge_frac*b
+        
+        return noise
+
+
+def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData, difficulty:float):
+    shape = (size, size)
+    radius = size * (0.1 + difficulty * 0.3)
     center = np.array(shape) // 2
     pip_pos = [
         int(np.random.normal(loc=center[0], scale=radius)),
         int(np.random.normal(loc=center[1], scale=radius)),
     ]
     
-    # scale noise with difficulty^2 so that smaller values primarily 
+    # scale noise such that smaller values primarily 
     # differ in z range rather than noise
-    noise_amp = -2 + difficulty**2 * 2.5 
+    noise_amp = np.clip((difficulty - 0.2) * 5, 0, 1) 
 
-    # structured noise to look like cells / neuropil    
-    str_noise_len = 3
-    image = make_structured_noise(
-        shape=shape,
-        edge=np.random.normal(size=2, scale=3), 
-        edge_frac=np.random.normal(scale=0.2, loc=1), 
-        noise_radii=np.random.uniform(1, 50, size=str_noise_len), 
-        noise_amplitudes=10**np.random.normal(size=str_noise_len, loc=noise_amp, scale=0.2),
-        sin_shift=np.random.uniform(0.05, 0.3),
-        noise_exponent=2,
-    )
-
-    # unstructured noise at various scales
-    image += make_noise(
-        shape=shape,
-        amplitudes=10**np.random.normal(size=3, loc=noise_amp, scale=0.2),
-        radii=[
-            np.random.normal(loc=100, scale=30),
-            np.random.normal(loc=10, scale=3),
-            np.random.normal(loc=2, scale=1),
-        ],
-    )
+    # generate or load noise
+    image = noise_data.get_noise(size, noise_amp)
 
     # add in pipette template
     z_difficulty = difficulty**0.5
-    z_range = (template.z.min() * z_difficulty, template.z.max() * z_difficulty)
-    z_target = np.random.random() * (z_range[1] - z_range[0]) + z_range[0]
+    z_range = 40e-6 * z_difficulty
+    z_target = np.random.uniform(-z_range, z_range)
     z_um = template.add_to_image(z=z_target, dst_arr=image, pip_pos=pip_pos, amp=10**np.random.normal(loc=0.2, scale=0.2))
 
     # normalize image
