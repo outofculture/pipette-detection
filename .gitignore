@@ -1,4 +1,5 @@
 training_data
+template_data
 models
 conda_env
 __pycache__
