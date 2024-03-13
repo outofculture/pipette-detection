@@ -14,10 +14,11 @@ class PipetteDetectionModel:
         print(self.model.summary())
 
     @staticmethod
-    def create_model(model_type, input_shape, pooling_layer=True, flatten_layer=False, dense_layers=None):
+    def create_model(model_type, input_shape, pooling_layer=True, flatten_layer=False, 
+                     dense_layers=None, output_type='coordinates'):
         base_model = getattr(keras.applications, model_type)(weights='imagenet', include_top=False, input_shape=input_shape)
         base_model.trainable = False
-
+        print("input shape:", input_shape)
         layers = [
             keras.Input(shape=input_shape),
             base_model,
@@ -30,7 +31,11 @@ class PipetteDetectionModel:
             for size in dense_layers:
                 layers.append(keras.layers.Dense(size, activation='relu'))
 
-        layers.append(keras.layers.Dense(3))
+        if output_type == 'coordinates':
+            layers.append(keras.layers.Dense(3))
+        elif output_type == 'onehot':
+            layers.append(keras.layers.Dense(3*input_shape[0], activation='softmax'))
+            layers.append(keras.layers.Flatten())
         model = keras.models.Sequential(layers)
 
         return model
@@ -98,10 +103,16 @@ class PipetteDetectionModel:
             optimizer_args = {}
             if learning_rate is not None:
                 optimizer_args['learning_rate'] = learning_rate
-            otimizer = keras.optimizers.Adam(**optimizer_args)
+            optimizer = keras.optimizers.Adam(**optimizer_args)
+
+        def loss_fn(y_true, y_pred):
+            # print shapes and return categotical crossentropy
+            print("loss shapes:", y_true.shape, y_pred.shape)
+            return keras.losses.categorical_crossentropy(y_true, y_pred)
+
         self.model.compile(
             optimizer=optimizer, 
-            loss='mse',
+            loss='mse' if self.model_opts['output_type'] == 'coordinates' else loss_fn,
         )
 
         self.validator = PeriodicValidation(
@@ -133,7 +144,8 @@ class PipetteDetectionModel:
                 callbacks=callbacks,
             )
         finally:
-            if save_path is not None:
+            # save if we ran more than one batch
+            if save_path is not None and self.validator.last_batch is not None and self.validator.last_batch > 0:
                 full_save_path = os.path.join(save_path, 'fit_model')
                 print(f"Saving final model to {full_save_path}..")
                 self.model.save_weights(weights_path)

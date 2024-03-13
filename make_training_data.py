@@ -32,7 +32,6 @@ class PipetteTemplate:
             ind = np.random.randint(self.image.shape[0])
         else:
             ind = np.argmin(np.abs(self.z - z))
-
         img = self.image[ind]
         pos = np.array((self.z[ind],) + tuple(self.pos))
 
@@ -84,7 +83,8 @@ class PipetteTemplates:
         
         Return chosen Z position.
         """
-        template = np.random.choice(self.templates)
+        i = np.random.randint(0, len(self.templates))
+        template = self.templates[i]
         return template.add_to_image(z, dst_arr, pip_pos, amp)
 
 
@@ -103,13 +103,15 @@ class NoiseData:
     def get_noise(self, size: int, noise_amp: float):
         all_noise = self._load_noise()
         # select a random noise file
-        noise = all_noise[np.random.randint(0, len(all_noise))]
+        i = np.random.randint(0, len(all_noise))
+        noise = all_noise[i]
         # select a random plane
-        noise = noise[np.random.randint(0, len(noise))]
+        i = np.random.randint(0, noise.shape[0])
+        noise = noise[i]
         # select a random chunk
         i = np.random.randint(0, noise.shape[0] - size)
         j = np.random.randint(0, noise.shape[1] - size)
-        noise = noise[i:i+size, j:j+size]
+        noise = noise[i:i+size, j:j+size].copy()
         # randomly flip / rotate
         if np.random.random() > 0.5:
             noise = noise[::-1]
@@ -204,7 +206,6 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
         int(np.random.normal(loc=center[0], scale=radius)),
         int(np.random.normal(loc=center[1], scale=radius)),
     ]
-    
     # scale noise such that smaller values primarily 
     # differ in z range rather than noise
     noise_amp = np.clip((difficulty - 0.2) * 5, 0, 1) 
@@ -226,7 +227,8 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
 
 
 def save_training_data(path, img_count, image, pip_pos):
-    assert os.path.exists(path), f"'{path}' directory expected to exist"
+    if not os.path.exists(path):
+        os.makedirs(path)
     image = Image.fromarray(image*255).convert('RGB')
     img_file = f'{img_count:05d}.jpg'
     image.save(os.path.join(path, img_file))
@@ -254,6 +256,7 @@ class TrainingDataGenerator:
 
 
 if __name__ == '__main__':
+    import glob
     parser = argparse.ArgumentParser(description='Generate pipette detection training data files')
     parser.add_argument('--path', default="training", type=str, help='path to store training data')
     parser.add_argument('--size', default=1, type=int, help='number of training examples to generate')
@@ -262,8 +265,9 @@ if __name__ == '__main__':
 
     training_data_queue = Queue(20)
     training_data_args = {
-        'shape': (500, 500),
-        'template': PipetteTemplate('yip_2019_template.npz'),
+        'size': 400,
+        'template': PipetteTemplates(glob.glob('template_data/template_*.npz')),
+        'noise_data': NoiseData(glob.glob('template_data/background_data/ImageSequence*/image_000.ma')),
         'difficulty': args.difficulty,
     }
     threads = [TrainingDataGenerator(training_data_queue, training_data_args) for _ in range(8)]

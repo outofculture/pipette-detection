@@ -150,13 +150,13 @@ class PeriodicModelSave(keras.callbacks.Callback):
         keras.callbacks.Callback.__init__(self)
         
     def on_train_batch_end(self, batch, logs=None):
-        if batch % self._n_iter == 0:
-            print(f"saving weigts to {self.filename}")
+        if batch > 0 and batch % self._n_iter == 0:
+            print(f"saving weights to {self.filename}")
             self.model.save_weights(self.filename)
 
 
 def fit_model(training_data, save_path, batch_size=64, rate_scheduler=None, training_level=None, model_type=None, load_model=None, load_weights=None, 
-              train_depth=1.0, optimizer=None, learning_rate=None, epochs=10, allow_cpu=False):
+              train_depth=1.0, optimizer=None, learning_rate=None, epochs=10, allow_cpu=False, model_opts=None):
     if os.path.exists(save_path):
         raise Exception(f"Save path {save_path} already exists")
 
@@ -173,7 +173,11 @@ def fit_model(training_data, save_path, batch_size=64, rate_scheduler=None, trai
     if model_type is None and load_model is None:
         raise Exception("Must specify either model_type or load_model")
 
-    all_data = load_training_data(training_data)
+    if isinstance(training_data, str):
+        all_data = load_training_data(training_data)
+    else:
+        all_data = training_data
+    
     if isinstance(all_data, MultiLevelTrainingData) and training_level is None:
         raise Exception("Multiple training levels present; must specify training-level")
     training_data, validation_data = all_data.split([0.995, 0.005])
@@ -183,10 +187,11 @@ def fit_model(training_data, save_path, batch_size=64, rate_scheduler=None, trai
 
     input_shape = training_data[0][0].shape
 
+    model_opts = model_opts if model_opts is not None else {}
     if load_model is not None:
-        model = PipetteDetectionModel(load_model=load_model)
+        model = PipetteDetectionModel(load_model=load_model, model_opts=model_opts)
     else:
-        model = PipetteDetectionModel(model_opts={'model_type': model_type, 'input_shape': input_shape})
+        model = PipetteDetectionModel(model_opts={'model_type': model_type, 'input_shape': input_shape, **model_opts})
 
     if load_weights is not None:
         model.load_weights(load_weights)

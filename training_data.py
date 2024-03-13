@@ -3,8 +3,9 @@ import numpy as np
 from PIL import Image
 
 
-def load_training_data(path):
-    norm = Normalizer(range=[[-100, 0, 0], [100, 500, 500]])
+def load_training_data(path, norm=None):
+    if norm is None:
+        norm = Normalizer(range=[[-100, 0, 0], [100, 500, 500]])
     if os.path.exists(os.path.join(path, 'pos.csv')):
         return TrainingData(path, output_norm=norm)
     else:
@@ -53,9 +54,9 @@ class TrainingData:
             return self.__getslice__(item)
         img_file, z, row, col = self.index[item]
         img = np.asarray(Image.open(img_file)) / 255
-        pos = np.array([z, row, col])
+        pos = np.array([[z, row, col]])
         if self.output_norm is not None:
-            pos = self.output_norm.normalize(pos)
+            pos = self.output_norm.normalize(pos)[0]
         return img, pos
     
     def generator(self, batch_size):
@@ -66,6 +67,7 @@ class TrainingData:
                 if next_data is None:
                     return
                 self.last_batch = next_data
+                print("load batch:", next_data[0].shape, next_data[1].shape)
                 yield next_data
         finally:
             preloader.close()
@@ -157,7 +159,12 @@ class MultiLevelTrainingData:
 
 
 class Normalizer:
-    """Normalizes a range of values to [-1, 1]"""
+    """Normalizes a range of values to [-1, 1]
+    
+    Parameters
+    ----------
+    range : list
+        List of [[zmin, rowmin, colmin], [xmax, rowmax, colmax]]"""
     def __init__(self, range):
         range = np.array(range)
         diff = range[1] - range[0]
@@ -169,6 +176,54 @@ class Normalizer:
 
     def denormalize(self, x):
         return (x / self.scale) + self.offset
+
+
+class OneHotNormalizer:
+    """Converts a range of values to a one-hot vector
+
+    Parameters
+    ----------
+    range : list
+        List of [[zmin, rowmin, colmin], [xmax, rowmax, colmax]]
+    size : int
+        Size of the one-hot vector
+    """
+    def __init__(self, range, size):
+        self.range = np.array(range)
+        self.size = size
+
+    def normalize(self, x):
+        """
+        Parameters
+        ----------
+        x : array-like
+            2D array of [[z, row, col], ...]
+        """
+        x = np.array(x)
+        assert x.ndim == 2 and x.shape[1] == 3
+
+        x = np.clip(x, self.range[0], self.range[1])
+        x = (x - self.range[0]) / (self.range[1] - self.range[0])
+        x = np.floor(x * (self.size - 1)).astype('uint32')
+        result = np.zeros((x.shape[0], 3, self.size))
+        for i in (0, 1, 2):
+            result[:, i, x[:, i]] = 1
+        return result.reshape(x.shape[0], 3 * self.size)
+    
+    def denormalize(self, x):
+        """
+        Parameters
+        ----------
+        x : array-like
+            3D array of one-hot vectors like [[[z vector], [row vector], [col vector]], ...]
+        """
+        x = np.array(x)
+        assert x.ndim == 3 and x.shape[1] == 3 and x.shape[2] == self.size
+        result = np.zeros((len(x), 3))
+        for i in (0, 1, 2):
+            result[:, i] = np.argmax(x[:, i], axis=-1) / self.size
+        result = (result * (self.range[1] - self.range[0])) + self.range[0]
+        return result
 
 
 class Preloader:
