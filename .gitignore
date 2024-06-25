@@ -4,3 +4,7 @@ models
 conda_env
 __pycache__
 *checkpoint.ipynb
+.ipynb_checkpoints/
+.vscode/
+tensorflow_conda_env/
+training/
