@@ -16,6 +16,7 @@ class TrainingData:
     def __init__(self, data_path=None, output_norm=None):
         self.data_path = data_path
         self.output_norm = output_norm
+        self.input_norm = ImageNormalizer()
         self.last_batch = None
 
         if data_path is not None:
@@ -41,19 +42,26 @@ class TrainingData:
         return result
 
     def get_arrays(self):
+        """Return a tuple of (images, positions) as numpy arrays
+
+        Images are floating point arrays normalized to [0, 1]
+        Positions are floating point arrays normalized using self.output_norm
+        """
         images = []
         positions = []
         for i in range(len(self)):
             img,pos = self[i]
             images.append(img)
             positions.append(pos)
-        return np.stack(images), np.stack(positions)
+        return np.stack(images), np.concatenate(positions)
         
     def __getitem__(self, item):
         if isinstance(item, slice):
             return self.__getslice__(item)
         img_file, z, row, col = self.index[item]
-        img = np.asarray(Image.open(img_file)) / 255
+        img = np.asarray(Image.open(img_file))
+        if self.input_norm is not None:
+            ig = self.input_norm.normalize(img)
         pos = np.array([[z, row, col]])
         if self.output_norm is not None:
             pos = self.output_norm.normalize(pos)[0]
@@ -67,7 +75,6 @@ class TrainingData:
                 if next_data is None:
                     return
                 self.last_batch = next_data
-                print("load batch:", next_data[0].shape, next_data[1].shape)
                 yield next_data
         finally:
             preloader.close()
@@ -158,6 +165,15 @@ class MultiLevelTrainingData:
         return self.levels[level]
 
 
+class Nopealizer:
+    """Does not normalize anything"""
+    def normalize(self, x):
+        return x
+
+    def denormalize(self, x):
+        return x
+
+
 class Normalizer:
     """Normalizes a range of values to [-1, 1]
     
@@ -176,6 +192,14 @@ class Normalizer:
 
     def denormalize(self, x):
         return (x / self.scale) + self.offset
+
+
+class ImageNormalizer:
+    def normalize(self, img):
+        return img / 255
+    
+    def denormalize(self, img):
+        return img * 255
 
 
 class OneHotNormalizer:
@@ -208,7 +232,7 @@ class OneHotNormalizer:
         result = np.zeros((x.shape[0], 3, self.size))
         for i in (0, 1, 2):
             result[:, i, x[:, i]] = 1
-        return result.reshape(x.shape[0], 3 * self.size)
+        return result
     
     def denormalize(self, x):
         """

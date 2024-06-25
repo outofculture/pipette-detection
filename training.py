@@ -211,3 +211,61 @@ def fit_model(training_data, save_path, batch_size=64, rate_scheduler=None, trai
     )
     
     return model, training_data
+
+
+def fit_model_pytorch(training_data, save_path, batch_size=64, rate_scheduler=None, training_level=None, model_type=None, load_model=None, load_weights=None, 
+              train_depth=1.0, optimizer=None, learning_rate=None, epochs=10, allow_cpu=False, model_opts=None):
+    if os.path.exists(save_path):
+        raise Exception(f"Save path {save_path} already exists")
+
+    # imports slowly due to tensorflow; wait until after argument parsing to import
+    from model_pytorch import PipetteDetectionModel
+
+    import torch
+    gpus = torch.cuda.device_count()
+    print("GPUS:", gpus, allow_cpu)
+    if not allow_cpu and gpus == 0:
+        raise Exception("Exiting; no GPU available (use --allow-cpu to override)")
+
+    # make sure one of model_type or load_model is specified
+    if model_type is None and load_model is None:
+        raise Exception("Must specify either model_type or load_model")
+
+    if isinstance(training_data, str):
+        all_data = load_training_data(training_data)
+    else:
+        all_data = training_data
+    
+    if isinstance(all_data, MultiLevelTrainingData) and training_level is None:
+        raise Exception("Multiple training levels present; must specify training-level")
+    training_data, validation_data = all_data.split([0.995, 0.005])
+    if training_level is not None:
+        training_data = training_data.get_level(training_level)
+    print(f"Loaded {len(training_data)} training examples and {len(validation_data)} validation examples")
+
+    input_shape = training_data[0][0].shape
+
+    model_opts = model_opts if model_opts is not None else {}
+    if load_model is not None:
+        model = PipetteDetectionModel(load_model=load_model, model_opts=model_opts)
+    else:
+        model = PipetteDetectionModel(model_opts={'model_type': model_type, 'input_shape': input_shape, **model_opts})
+
+    if load_weights is not None:
+        model.load_weights(load_weights)
+
+    model.fit(
+        training_data, 
+        validation_data, 
+        train_depth=train_depth,
+        optimizer=optimizer, 
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        rate_scheduler=rate_scheduler,
+        epochs=epochs,
+        save_path=save_path,
+        val_interval=100,
+        save_interval=1000,
+    )
+    
+    return model, training_data
