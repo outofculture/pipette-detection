@@ -3,20 +3,16 @@ import numpy as np
 from PIL import Image
 
 
-def load_training_data(path, norm=None):
-    if norm is None:
-        norm = Normalizer(range=[[-100, 0, 0], [100, 500, 500]])
+def load_training_data(path):
     if os.path.exists(os.path.join(path, 'pos.csv')):
-        return TrainingData(path, output_norm=norm)
+        return TrainingData(path)
     else:
-        return MultiLevelTrainingData(path, output_norm=norm)
+        return MultiLevelTrainingData(path)
 
 
 class TrainingData:
-    def __init__(self, data_path=None, output_norm=None):
+    def __init__(self, data_path=None):
         self.data_path = data_path
-        self.output_norm = output_norm
-        self.input_norm = ImageNormalizer()
         self.last_batch = None
 
         if data_path is not None:
@@ -35,10 +31,9 @@ class TrainingData:
     
     def __getslice__(self, sl):
         # return a new TrainingData with a slice of the index
-        result = TrainingData(output_norm=self.output_norm)
+        result = TrainingData()
         result.index = self.index[sl]
         result.image_shape = self.image_shape
-        result.output_norm = self.output_norm
         return result
 
     def get_arrays(self):
@@ -53,18 +48,14 @@ class TrainingData:
             img,pos = self[i]
             images.append(img)
             positions.append(pos)
-        return np.stack(images), np.concatenate(positions)
+        return np.stack(images), np.stack(positions)
         
     def __getitem__(self, item):
         if isinstance(item, slice):
             return self.__getslice__(item)
         img_file, z, row, col = self.index[item]
         img = np.asarray(Image.open(img_file))
-        if self.input_norm is not None:
-            ig = self.input_norm.normalize(img)
-        pos = np.array([[z, row, col]])
-        if self.output_norm is not None:
-            pos = self.output_norm.normalize(pos)[0]
+        pos = np.array([z, row, col])
         return img, pos
     
     def generator(self, batch_size):
@@ -84,7 +75,7 @@ class TrainingData:
         parts = []
         for p in proportions:
             stop = start + int(len(self) * p)
-            part = TrainingData(output_norm=self.output_norm)
+            part = TrainingData()
             part.index = self.index[start:stop]
             part.image_shape = self.image_shape
             start = stop
@@ -93,7 +84,7 @@ class TrainingData:
 
     @classmethod
     def join(self, data):
-        all_data = TrainingData(output_norm=data[0].output_norm)
+        all_data = TrainingData()
         all_data.index = []
         for d in data:
             all_data.index += d.index
@@ -102,13 +93,12 @@ class TrainingData:
 
 
 class MultiLevelTrainingData:
-    def __init__(self, data_path=None, output_norm=None):
+    def __init__(self, data_path=None):
         self.data_path = data_path
-        self.output_norm = output_norm
         self.levels = {}
         if data_path is not None:
             for level in sorted(os.listdir(data_path)):
-                self.levels[level] = TrainingData(os.path.join(data_path, level), output_norm=output_norm)
+                self.levels[level] = TrainingData(os.path.join(data_path, level))
 
     def __len__(self):
         return sum([len(self.levels[level]) for level in self.levels])
@@ -128,7 +118,7 @@ class MultiLevelTrainingData:
         parts = {}
         for level in self.levels:
             parts[level] = self.levels[level][sl]
-        result = MultiLevelTrainingData(output_norm=self.output_norm)
+        result = MultiLevelTrainingData()
         result.levels = parts
         return result
 
@@ -163,6 +153,18 @@ class MultiLevelTrainingData:
 
     def get_level(self, level):
         return self.levels[level]
+    
+    def generator(self, batch_size):
+        gens = [self.levels[level].generator(batch_size) for level in self.levels]
+        while True:
+            # get the next batch from each level, then concatenate and shuffle
+            batches = [next(gen) for gen in gens]
+            images = np.concatenate([b[0] for b in batches])
+            positions = np.concatenate([b[1] for b in batches])
+            indices = np.arange(len(images))
+            np.random.shuffle(indices)
+            for i in range(0, len(images), batch_size):
+                yield images[indices[i:i+batch_size]], positions[indices[i:i+batch_size]]
 
 
 class Nopealizer:
@@ -180,7 +182,7 @@ class Normalizer:
     Parameters
     ----------
     range : list
-        List of [[zmin, rowmin, colmin], [xmax, rowmax, colmax]]"""
+        List of [[zmin, rowmin, colmin], [zmax, rowmax, colmax]]"""
     def __init__(self, range):
         range = np.array(range)
         diff = range[1] - range[0]

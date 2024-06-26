@@ -233,7 +233,7 @@ def save_training_data(path, img_count, image, pip_pos):
     img_file = f'{img_count:05d}.jpg'
     image.save(os.path.join(path, img_file))
     with open(os.path.join(path, 'pos.csv'), 'a') as pos_fh:
-        pos_fh.write(f'{img_file},{pip_pos[0]:0.2f},{pip_pos[1]:d},{pip_pos[2]:d}\n')
+        pos_fh.write(f'{img_file},{pip_pos[0]:0.2g},{pip_pos[1]:d},{pip_pos[2]:d}\n')
 
 
 
