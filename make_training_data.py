@@ -215,7 +215,7 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
 
     # add in pipette template
     z_difficulty = difficulty**0.5
-    z_range = 40e-6 * z_difficulty
+    z_range = 40 * z_difficulty  # μm
     z_target = np.random.uniform(-z_range, z_range)
     z_um = template.add_to_image(z=z_target, dst_arr=image, pip_pos=pip_pos, amp=10**np.random.normal(loc=0.2, scale=0.2))
 
@@ -263,6 +263,17 @@ if __name__ == '__main__':
     parser.add_argument('--difficulty', default=0, type=float, help='difficulty (0-1) controls signal/noise ratio, pipette focus and positioning')
     args = parser.parse_args()
 
+    pos_file = os.path.join(args.path, 'pos.csv')
+    if os.path.exists(pos_file):
+        last_line = open(pos_file).readlines()[-1]
+        img_count = int(last_line.split(',')[0].split('.')[0]) + 1
+    else:
+        img_count = 0
+
+    if img_count >= args.size:
+        print('Already generated enough training data')
+        exit()
+
     training_data_queue = Queue(20)
     training_data_args = {
         'size': 400,
@@ -272,5 +283,5 @@ if __name__ == '__main__':
     }
     threads = [TrainingDataGenerator(training_data_queue, training_data_args) for _ in range(8)]
 
-    for i in tqdm(range(args.size)):
+    for i in tqdm(range(img_count, args.size)):
         save_training_data(args.path, i, *training_data_queue.get())
