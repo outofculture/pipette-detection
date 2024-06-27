@@ -42,15 +42,33 @@ class PipetteTemplate:
 
         return img, pos
 
-    def add_to_image(self, z, dst_arr, pip_pos, amp=1):
+    def add_to_image(self, z, dst_arr, pip_pos, amp=1, angle=0):
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
         ignoring non-overlapping areas.
         
         Return chosen Z position and sum of squared differences added by the template.
         """
+        # get template image and pipette position
         template_arr, (template_z_um, template_row, template_col) = self.get_image(z)
-        offset = (np.array(pip_pos) - [template_row, template_col]).astype(int)
-        
+        template_pip_pos = np.array([template_row, template_col])
+
+        if angle != 0:
+            # rotate template image
+            template_arr = scipy.ndimage.rotate(template_arr.astype(float), angle, reshape=False)
+
+            # rotate offset position (rows, cols) around the center of the image
+            center = np.array(template_arr.shape) // 2
+            template_pip_pos -= center
+            rotation_matrix = [
+                [np.cos(np.radians(angle)), -np.sin(np.radians(angle))], 
+                [np.sin(np.radians(angle)), np.cos(np.radians(angle))]
+            ]
+            template_pip_pos = np.dot(rotation_matrix, template_pip_pos)
+            template_pip_pos += center
+
+        offset = (np.array(pip_pos) - template_pip_pos).astype(int)
+
+        # add template to destination array        
         dst_rgn = np.array([offset, np.array(offset) + template_arr.shape])
         dst_rgn = np.clip(dst_rgn, 0, dst_arr.shape)
         if np.all(dst_rgn[0] < dst_rgn[1]):
@@ -79,7 +97,7 @@ class PipetteTemplates:
         img, pos = template.get_image(z)
         return img, pos
 
-    def add_to_image(self, z, dst_arr, pip_pos, amp=1):
+    def add_to_image(self, z, dst_arr, pip_pos, amp=1, angle=0):
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
         ignoring non-overlapping areas.
         
@@ -87,7 +105,7 @@ class PipetteTemplates:
         """
         i = np.random.randint(0, len(self.templates))
         template = self.templates[i]
-        return template.add_to_image(z, dst_arr, pip_pos, amp)
+        return template.add_to_image(z, dst_arr, pip_pos, amp, angle=angle)
 
 
 class NoiseData:
@@ -200,7 +218,23 @@ class NoiseGenerator(NoiseData):
         return noise
 
 
-def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData, difficulty:float):
+def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData, difficulty:float, angle_deg_stdev=5):
+    """Make a single training image with a pipette at a random position and focus depth
+
+    Parameters
+    ----------
+    size : int
+        Size (width or height) of the image
+    template : PipetteTemplate
+        Pipette template to use
+    noise_data : NoiseData
+        Noise data to mix in
+    difficulty : float
+        Difficulty (0-1) controls signal/noise ratio, pipette focus and positioning
+    angle_deg_stdev : float
+        Standard deviation of random angle in degrees to rotate the pipette
+    
+    """
     shape = (size, size)
     radius = size * (0.1 + difficulty * 0.3)
     center = np.array(shape) // 2
@@ -220,7 +254,13 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
     z_difficulty = difficulty**0.5
     z_range = 40 * z_difficulty  # μm
     z_target = np.random.uniform(-z_range, z_range)
-    z_um, sqdif = template.add_to_image(z=z_target, dst_arr=image, pip_pos=pip_pos, amp=10**np.random.normal(loc=0.2, scale=0.2))
+    z_um, sqdif = template.add_to_image(
+        z=z_target, 
+        dst_arr=image, 
+        pip_pos=pip_pos, 
+        amp=10**np.random.normal(loc=0.2, scale=0.2),
+        angle=np.random.normal(scale=angle_deg_stdev),
+    )
 
     # normalize image
     image -= image.min()
@@ -230,14 +270,15 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
     return image, (z_um, pip_pos[0], pip_pos[1]), {'pip_visibility': pip_visibility, 'bg_stdev': stdev, 'fg_sqdif': sqdif}
 
 
-def save_training_data(path, img_count, image, pip_pos):
+def save_training_data(path, img_count, image, pip_pos, image_stats):
     if not os.path.exists(path):
         os.makedirs(path)
     image = Image.fromarray(image*255).convert('RGB')
     img_file = f'{img_count:05d}.jpg'
     image.save(os.path.join(path, img_file))
     with open(os.path.join(path, 'pos.csv'), 'a') as pos_fh:
-        pos_fh.write(f'{img_file},{pip_pos[0]:0.2g},{pip_pos[1]:d},{pip_pos[2]:d}\n')
+        pos_fh.write(f'{img_file},{pip_pos[0]:0.2g},{pip_pos[1]:d},{pip_pos[2]:d},'
+                     f'{image_stats['pip_visibility']},{image_stats['bg_stdev']},{image_stats['fg_sqdif']}\n')
 
 
 
