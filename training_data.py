@@ -22,8 +22,8 @@ class TrainingData:
         self.index = []
         fh = open(os.path.join(data_path, 'pos.csv'))
         for line in fh.readlines():
-            img_file, z, row, col = line.split(',')
-            self.index.append((os.path.join(data_path, img_file), float(z), float(row), float(col)))
+            img_file, z, row, col, snr, _, _ = line.split(',')
+            self.index.append((os.path.join(data_path, img_file), float(z), float(row), float(col), float(snr)))
         self.image_shape = self[0][0].shape
 
     def __len__(self):
@@ -53,9 +53,9 @@ class TrainingData:
     def __getitem__(self, item):
         if isinstance(item, slice):
             return self.__getslice__(item)
-        img_file, z, row, col = self.index[item]
+        img_file, z, row, col, snr = self.index[item]
         img = np.asarray(Image.open(img_file))
-        pos = np.array([z, row, col])
+        pos = np.array([z, row, col, snr])
         return img, pos
     
     def generator(self, batch_size):
@@ -182,7 +182,7 @@ class Normalizer:
     Parameters
     ----------
     range : list
-        List of [[zmin, rowmin, colmin], [zmax, rowmax, colmax]]"""
+        List of [[zmin, rowmin, colmin, ...], [zmax, rowmax, colmax, ...]]"""
     def __init__(self, range):
         range = np.array(range)
         diff = range[1] - range[0]
