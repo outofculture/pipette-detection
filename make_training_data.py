@@ -244,7 +244,7 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
     ]
     # scale noise such that smaller values primarily 
     # differ in z range rather than noise
-    noise_amp = np.clip((difficulty - 0.2) * 5, 0, 1) 
+    noise_amp = np.clip((difficulty - 0.2) * 50, 0, np.inf) 
 
     # generate or load noise
     image = noise_data.get_noise(size, noise_amp)
@@ -255,9 +255,9 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
     z_range = 40 * z_difficulty  # μm
     z_target = np.random.uniform(-z_range, z_range)
     z_um, sqdif = template.add_to_image(
-        z=z_target, 
-        dst_arr=image, 
-        pip_pos=pip_pos, 
+        z=z_target,
+        dst_arr=image,
+        pip_pos=pip_pos,
         amp=10**np.random.normal(loc=0.2, scale=0.2),
         angle=np.random.normal(scale=angle_deg_stdev),
     )
