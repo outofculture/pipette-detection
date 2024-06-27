@@ -46,7 +46,7 @@ class PipetteTemplate:
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
         ignoring non-overlapping areas.
         
-        Return chosen Z position.
+        Return chosen Z position and sum of squared differences added by the template.
         """
         template_arr, (template_z_um, template_row, template_col) = self.get_image(z)
         offset = (np.array(pip_pos) - [template_row, template_col]).astype(int)
@@ -55,10 +55,12 @@ class PipetteTemplate:
         dst_rgn = np.clip(dst_rgn, 0, dst_arr.shape)
         if np.all(dst_rgn[0] < dst_rgn[1]):
             src_rgn = dst_rgn - offset
-            src_subrgn = template_arr[src_rgn[0,0]:src_rgn[1,0], src_rgn[0,1]:src_rgn[1,1]]
-            dst_arr[dst_rgn[0,0]:dst_rgn[1,0], dst_rgn[0,1]:dst_rgn[1,1]] += src_subrgn * amp
-        
-        return template_z_um
+            src_subrgn = amp * template_arr[src_rgn[0,0]:src_rgn[1,0], src_rgn[0,1]:src_rgn[1,1]]
+            sqdif = (src_subrgn**2).sum()
+            dst_arr[dst_rgn[0,0]:dst_rgn[1,0], dst_rgn[0,1]:dst_rgn[1,1]] += src_subrgn
+        else:
+            sqdif = 0
+        return template_z_um, sqdif
 
 
 class PipetteTemplates:
@@ -212,18 +214,20 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
 
     # generate or load noise
     image = noise_data.get_noise(size, noise_amp)
+    stdev = image.std()
 
     # add in pipette template
     z_difficulty = difficulty**0.5
     z_range = 40 * z_difficulty  # μm
     z_target = np.random.uniform(-z_range, z_range)
-    z_um = template.add_to_image(z=z_target, dst_arr=image, pip_pos=pip_pos, amp=10**np.random.normal(loc=0.2, scale=0.2))
+    z_um, sqdif = template.add_to_image(z=z_target, dst_arr=image, pip_pos=pip_pos, amp=10**np.random.normal(loc=0.2, scale=0.2))
 
     # normalize image
     image -= image.min()
     image /= image.max()
 
-    return image, (z_um, pip_pos[0], pip_pos[1])
+    pip_visibility = sqdif / (max(0.01, stdev) * image.size)
+    return image, (z_um, pip_pos[0], pip_pos[1]), {'pip_visibility': pip_visibility, 'bg_stdev': stdev, 'fg_sqdif': sqdif}
 
 
 def save_training_data(path, img_count, image, pip_pos):
