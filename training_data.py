@@ -38,9 +38,6 @@ class TrainingData:
 
     def get_arrays(self):
         """Return a tuple of (images, positions) as numpy arrays
-
-        Images are floating point arrays normalized to [0, 1]
-        Positions are floating point arrays normalized using self.output_norm
         """
         images = []
         positions = []
