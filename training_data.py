@@ -22,7 +22,7 @@ class TrainingData:
         self.index = []
         fh = open(os.path.join(data_path, 'pos.csv'))
         for line in fh.readlines():
-            img_file, z, row, col, snr, _, _ = line.split(',')
+            img_file, z, row, col, snr = line.split(',')[:5]
             self.index.append((os.path.join(data_path, img_file), float(z), float(row), float(col), float(snr)))
         self.image_shape = self[0][0].shape
 
