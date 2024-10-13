@@ -9,6 +9,7 @@ import scipy.ndimage
 from PIL import Image
 from tqdm import tqdm
 import MetaArray
+import yaml
 
 
 class PipetteTemplate:
@@ -18,12 +19,16 @@ class PipetteTemplate:
         self.image = data['image_data'] / data['image_data'].max()
         # Set background to 0 (right side of template image should be all background)
         self.image -= self.image[:, :, -10:].mean(axis=1).mean(axis=1)[:, None, None] 
-        self.pos = data['pipette_pos']
+        self.pos = data['pipette_pos']  # frame, row, col
         self.z = data['z_um']
+        self.pixel_size = data['pixel_size']
         self.shape = self.image.shape
 
     def get_image(self, z=0, flip=True):
-        """Return template image with the closest possible Z value, along with 3D pipette position (z_um, row, col)
+        """Return template image with the closest possible Z value (where z is 
+        the height of the pipette relative to the focal plane), along with 3D 
+        pipette position (z_um, row, col), and pixel size.
+        
         If flip is True, randomly flip vertically around the pipette tip
 
         If z is None, choose randomly
@@ -33,25 +38,31 @@ class PipetteTemplate:
         else:
             ind = np.argmin(np.abs(self.z - z))
         img = self.image[ind]
-        pos = np.array((self.z[ind],) + tuple(self.pos))
+        pos = np.array((self.z[ind],) + tuple(self.pos[1:]))
 
         # randomly flip vertically around the pipette tip
         if flip and np.random.random() > 0.5:
             img = img[::-1]
             pos[1] = img.shape[0] - pos[1]
 
-        return img, pos
+        return img, pos, self.pixel_size
 
-    def add_to_image(self, z, dst_arr, pip_pos, amp=1, angle=0, scale=1):
+    def add_to_image(self, z, dst_arr, pip_pos, dst_pixel_size, amp=1, angle=0, scale=1):
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
         ignoring non-overlapping areas.
+        
+        The template is scaled to match the pixel size of the destination image, plus an extra
+        scaling factor *scale*.
         
         Return chosen Z position and sum of squared differences added by the template.
         """
         # get template image and pipette position
-        template_arr, (template_z_um, template_row, template_col) = self.get_image(z)
+        template_arr, (template_z_um, template_row, template_col), template_px_size = self.get_image(z)
         template_pip_pos = np.array([template_row, template_col])
 
+        px_scale = template_px_size / dst_pixel_size
+        scale = scale * px_scale
+        
         if angle != 0:
             # scale template image
             center1 = np.array(template_arr.shape) / 2
@@ -129,10 +140,9 @@ class PipetteTemplates:
         If z is None, choose randomly
         """
         template = np.random.choice(self.templates)
-        img, pos = template.get_image(z)
-        return img, pos
+        return template.get_image(z)
 
-    def add_to_image(self, z, dst_arr, pip_pos, amp=1, angle=0, scale=1):
+    def add_to_image(self, z, dst_arr, pip_pos, dst_pixel_size, amp=1, angle=0, scale=1):
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col), 
         ignoring non-overlapping areas.
         
@@ -140,7 +150,7 @@ class PipetteTemplates:
         """
         i = np.random.randint(0, len(self.templates))
         template = self.templates[i]
-        return template.add_to_image(z, dst_arr, pip_pos, amp, angle=angle, scale=scale)
+        return template.add_to_image(z, dst_arr, pip_pos, dst_pixel_size, amp, angle=angle, scale=scale)
 
 
 class NoiseData:
@@ -149,23 +159,32 @@ class NoiseData:
     def __init__(self, files):
         self.files = files
         self.data = None
+        self.meta = None
     
     def _load_noise(self):
         if self.data is None:
-            self.data = [MetaArray.MetaArray(file=nf).asarray() for nf in self.files]
-        return self.data
+            self.data = []
+            self.meta = []
+            for nf in self.files:
+                path, filename = os.path.split(nf)
+                meta = yaml.safe_load(open(path + '/.index', 'r'))[filename]
+                self.data.append(MetaArray.MetaArray(file=nf).asarray())
+                self.meta.append(meta)
+        return self.data, self.meta
 
     def get_noise(self, size: int, noise_amp: float):
-        all_noise = self._load_noise()
+        all_noise, all_meta = self._load_noise()
         # select a random noise file
         i = np.random.randint(0, len(all_noise))
         noise = all_noise[i]
+        px_size = all_meta[i]['pixelSize'][0]
+        
         # select a random plane
         i = np.random.randint(0, noise.shape[0])
         noise = noise[i]
         # select a random chunk
-        i = np.random.randint(0, noise.shape[0] - size)
-        j = np.random.randint(0, noise.shape[1] - size)
+        i = np.random.randint(0, max(1, noise.shape[0] - size))
+        j = np.random.randint(0, max(1, noise.shape[1] - size))
         noise = noise[i:i+size, j:j+size].copy()
         # randomly flip / rotate
         if np.random.random() > 0.5:
@@ -175,7 +194,7 @@ class NoiseData:
         noise -= noise.min()
         noise = noise * (noise_amp / noise.max())
 
-        return noise
+        return noise, px_size
 
 
 class NoiseGenerator(NoiseData):
@@ -253,14 +272,14 @@ class NoiseGenerator(NoiseData):
         return noise
 
 
-def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData, difficulty:float, 
-                       angle_deg_stdev=2, scale_exponent_stdev=0.2) -> Tuple[np.ndarray, Tuple[float, int, int], dict]:
+def make_training_data(size:int|tuple, template:PipetteTemplate, noise_data:NoiseData, difficulty:float, 
+                       angle_deg_stdev=2, pip_scale_exponent_stdev=0.2, img_scale_exponent_stdev=0.2) -> Tuple[np.ndarray, Tuple[float, int, int], dict]:
     """Make a single training image with a pipette at a random position and focus depth
 
     Parameters
     ----------
-    size : int
-        Size (width or height) of the image
+    size : int | tuple
+        Size (width or height) of the image, or a tuple (min, max) to choose the size randomly
     template : PipetteTemplate
         Pipette template to use
     noise_data : NoiseData
@@ -269,23 +288,28 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
         Difficulty (0-1) controls signal/noise ratio, pipette focus and positioning
     angle_deg_stdev : float
         Standard deviation of random angle in degrees to rotate the pipette
-    scale_exponent_stdev : float
+    pip_scale_exponent_stdev : float
         Standard deviation of random base-10 exponent to scale the pipette    
+    img_scale_exponent_stdev : float
+        Standard deviation of random base-10 exponent to scale the final image
     """
+    assert isinstance(size, (int, tuple))
+    if isinstance(size, tuple):
+        size = np.random.randint(size[0], size[1])
     shape = (size, size)
     radius = size * (0.1 + difficulty * 0.3)
     center = np.array(shape) // 2
-    pip_pos = [
-        int(np.random.normal(loc=center[0], scale=radius)),
-        int(np.random.normal(loc=center[1], scale=radius)),
-    ]
-    # scale noise such that smaller values primarily 
+    image_scale = 10**np.random.normal(loc=0, scale=img_scale_exponent_stdev)
+    
+    pip_pos = (center + np.random.normal(loc=0, scale=radius, size=2)).astype(int)
+    
+    # scale noise amplitude such that smaller difficulty values primarily 
     # differ in z range rather than noise
     # noise_amp = np.clip((difficulty - 0.2) * 50, 0, np.inf) 
     noise_amp = 1 + difficulty**2 * 50
 
     # generate or load noise
-    image = noise_data.get_noise(size, noise_amp)
+    image, bg_px_size = noise_data.get_noise(int(size / image_scale), noise_amp)
 
     # add in pipette template
     z_difficulty = difficulty**0.5
@@ -294,12 +318,16 @@ def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData,
     z_um, stats = template.add_to_image(
         z=z_target,
         dst_arr=image,
-        pip_pos=pip_pos,
+        pip_pos=pip_pos / image_scale,
+        dst_pixel_size=bg_px_size,
         amp=10**np.random.normal(loc=0.2, scale=0.1),
         angle=np.random.normal(scale=angle_deg_stdev),
-        scale=10**np.random.normal(scale=scale_exponent_stdev),
+        scale=10**np.random.normal(scale=pip_scale_exponent_stdev),
     )
 
+    # scale image
+    image = scipy.ndimage.zoom(image, image_scale)
+    
     # normalize image
     image = image - image.min()
     image /= image.max()
