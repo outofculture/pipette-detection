@@ -158,18 +158,21 @@ class NoiseData:
     """
     def __init__(self, files):
         self.files = files
+        assert len(self.files) > 0, f'No noise files specified'
         self.data = None
         self.meta = None
+        self.lock = threading.Lock()
     
     def _load_noise(self):
-        if self.data is None:
-            self.data = []
-            self.meta = []
-            for nf in self.files:
-                path, filename = os.path.split(nf)
-                meta = yaml.safe_load(open(path + '/.index', 'r'))[filename]
-                self.data.append(MetaArray.MetaArray(file=nf).asarray())
-                self.meta.append(meta)
+        with self.lock:
+            if self.data is None:
+                self.data = []
+                self.meta = []
+                for nf in self.files:
+                    path, filename = os.path.split(nf)
+                    meta = yaml.safe_load(open(path + '/.index', 'r'))[filename]
+                    self.data.append(MetaArray.MetaArray(file=nf).asarray())
+                    self.meta.append(meta)
         return self.data, self.meta
 
     def get_noise(self, size: int, noise_amp: float):
@@ -272,14 +275,26 @@ class NoiseGenerator(NoiseData):
         return noise
 
 
-def make_training_data(size:int|tuple, template:PipetteTemplate, noise_data:NoiseData, difficulty:float, 
-                       angle_deg_stdev=2, pip_scale_exponent_stdev=0.2, img_scale_exponent_stdev=0.2) -> Tuple[np.ndarray, Tuple[float, int, int], dict]:
+def scale_image(image, shape, **kwds):
+    """Scale image to an exact shape (zoom does not always generate the expected shape)
+    """
+    if image.shape == shape:
+        return image, np.array([1, 1])
+    
+    scale = (np.array(shape) + 1) / np.array(image.shape)
+    resized = scipy.ndimage.zoom(image, scale, **kwds)
+    actual_scale = np.array(resized.shape) / np.array(shape)
+    return resized[:shape[0], :shape[1]], actual_scale
+
+
+def make_training_data(size:int, template:PipetteTemplate, noise_data:NoiseData, difficulty:float, 
+                       angle_deg_stdev:float=2, pip_scale_exponent_stdev:float=0.2, source_size:int|None=None) -> Tuple[np.ndarray, Tuple[float, float, float], dict]:
     """Make a single training image with a pipette at a random position and focus depth
 
     Parameters
     ----------
-    size : int | tuple
-        Size (width or height) of the image, or a tuple (min, max) to choose the size randomly
+    size : int
+        Final size (width and height) of the image
     template : PipetteTemplate
         Pipette template to use
     noise_data : NoiseData
@@ -292,16 +307,18 @@ def make_training_data(size:int|tuple, template:PipetteTemplate, noise_data:Nois
         Standard deviation of random base-10 exponent to scale the pipette    
     img_scale_exponent_stdev : float
         Standard deviation of random base-10 exponent to scale the final image
+    source_size : int | tuple | None
+        Size of the source image (width and height) to generate (before scaling to final size).
+        Default is *size*
     """
-    assert isinstance(size, (int, tuple))
-    if isinstance(size, tuple):
-        size = np.random.randint(size[0], size[1])
-    shape = (size, size)
-    radius = size * (0.1 + difficulty * 0.3)
-    center = np.array(shape) // 2
-    image_scale = 10**np.random.normal(loc=0, scale=img_scale_exponent_stdev)
+    if source_size is None:
+        source_size = size
+    final_shape = (size, size)
+    source_shape = (source_size, source_size)
+    radius = source_size * (0.1 + difficulty * 0.3)
+    center = np.array(source_shape) // 2
     
-    pip_pos = (center + np.random.normal(loc=0, scale=radius, size=2)).astype(int)
+    pip_pos = (center + np.random.uniform(-radius, radius, size=2)).astype(int)
     
     # scale noise amplitude such that smaller difficulty values primarily 
     # differ in z range rather than noise
@@ -309,7 +326,7 @@ def make_training_data(size:int|tuple, template:PipetteTemplate, noise_data:Nois
     noise_amp = 1 + difficulty**2 * 50
 
     # generate or load noise
-    image, bg_px_size = noise_data.get_noise(int(size / image_scale), noise_amp)
+    image, bg_px_size = noise_data.get_noise(int(source_size), noise_amp)
 
     # add in pipette template
     z_difficulty = difficulty**0.5
@@ -318,7 +335,7 @@ def make_training_data(size:int|tuple, template:PipetteTemplate, noise_data:Nois
     z_um, stats = template.add_to_image(
         z=z_target,
         dst_arr=image,
-        pip_pos=pip_pos / image_scale,
+        pip_pos=pip_pos,
         dst_pixel_size=bg_px_size,
         amp=10**np.random.normal(loc=0.2, scale=0.1),
         angle=np.random.normal(scale=angle_deg_stdev),
@@ -326,8 +343,9 @@ def make_training_data(size:int|tuple, template:PipetteTemplate, noise_data:Nois
     )
 
     # scale image
-    image = scipy.ndimage.zoom(image, image_scale)
-    
+    image, scale = scale_image(image, final_shape, mode='nearest', order=2)
+    pip_pos = pip_pos * scale
+
     # normalize image
     image = image - image.min()
     image /= image.max()
@@ -342,7 +360,7 @@ def save_training_data(path, img_count, image, pip_pos, image_stats):
     img_file = f'{img_count:05d}.jpg'
     image.save(os.path.join(path, img_file))
     with open(os.path.join(path, 'pos.csv'), 'a') as pos_fh:
-        pos_fh.write(f'{img_file},{pip_pos[0]:0.2g},{pip_pos[1]:d},{pip_pos[2]:d},'
+        pos_fh.write(f'{img_file},{pip_pos[0]:0.2g},{pip_pos[1]:0.2g},{pip_pos[2]:0.2g},'
                      f'{image_stats["snr"]}\n')
 
 
