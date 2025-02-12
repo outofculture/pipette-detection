@@ -8,3 +8,4 @@ __pycache__
 .vscode/
 tensorflow_conda_env/
 training/
+torch_models/

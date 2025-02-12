@@ -28,8 +28,7 @@ class PipetteDetector(nn.Module):
 
         flat = pooled.reshape(pooled.size(0), -1)
 
-        xyzw = self.xyzw_out(flat)
-        return xyzw
+        return self.xyzw_out(flat)
 
 
 

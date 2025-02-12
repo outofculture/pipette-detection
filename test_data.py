@@ -106,7 +106,7 @@ def make_rotation_transform(angle, img1, img2, crop):
     return tr
 
 
-def make_rotated_crop(img, angle, crop):
+def make_rotated_crop(img, angle, crop=None):
     """Rotate and crop an image.
     Returns the rotated and cropped image and the transform mapping the original to the rotated 
     image (rows, cols).
@@ -117,11 +117,14 @@ def make_rotated_crop(img, angle, crop):
         The image to rotate and crop. Any ndim allowed, but the last two axes must be (rows, cols)
     angle : float   
         The angle in degrees to rotate the image.
-    crop : tuple of slice
+    crop : tuple of slice | None
         The crop window to apply to the rotated image.
     """
     rotated_img = scipy.ndimage.rotate(img, angle, axes=(img.ndim-2, img.ndim-1), reshape=False)
+    if crop is None:
+        crop = (slice(None), slice(None))
     cropped_rotated_img = rotated_img[..., crop[0], crop[1]]
     tr = make_rotation_transform(angle, img, rotated_img, crop)
     return cropped_rotated_img, tr
+
 

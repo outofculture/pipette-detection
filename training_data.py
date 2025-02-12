@@ -1,4 +1,4 @@
-import os, threading, queue
+import os, threading, queue, json
 import numpy as np
 from PIL import Image
 
@@ -20,10 +20,17 @@ class TrainingData:
 
     def load(self, data_path):
         self.index = []
-        fh = open(os.path.join(data_path, 'pos.csv'))
+        pos_files = [os.path.join(data_path, 'pos.csv'), os.path.join(data_path, 'pos.json_lines')]
+        for pos_file in pos_files:
+            if os.path.exists(pos_file):
+                break
+        else:
+            raise Exception("No position file found in %s" % data_path)
+        fh = open(pos_file, 'r')
         for line in fh.readlines():
-            img_file, z, row, col, snr = line.split(',')[:5]
-            self.index.append((os.path.join(data_path, img_file), float(z), float(row), float(col), float(snr)))
+            pos = json.loads(line)
+            pos['file'] = os.path.join(data_path, pos['file'])
+            self.index.append(pos)
         self.image_shape = self[0][0].shape
 
     def __len__(self):
@@ -50,9 +57,9 @@ class TrainingData:
     def __getitem__(self, item):
         if isinstance(item, slice):
             return self.__getslice__(item)
-        img_file, z, row, col, snr = self.index[item]
+        img_file = self.index[item]['file']
         img = np.asarray(Image.open(img_file))
-        pos = np.array([z, row, col, snr])
+        pos = self.index[item]['pip_pos'] + [self.index[item]['image_stats']['snr']]
         return img, pos
     
     def generator(self, batch_size):
@@ -184,7 +191,7 @@ class Normalizer:
         range = np.array(range)
         diff = range[1] - range[0]
         self.scale = 2 / diff
-        self.offset = possible_range[0] + diff / 2
+        self.offset = range[0] + diff / 2
 
     def normalize(self, x):
         return (x - self.offset) * self.scale
