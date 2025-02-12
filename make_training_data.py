@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -48,7 +50,7 @@ class PipetteTemplate:
 
         return img, pos, self.pixel_size
 
-    def add_to_image(self, z, dst_arr, pip_pos, dst_pixel_size, amp=1, angle=0, scale=1):
+    def add_to_image(self, z, dst_arr, pip_pos, dst_pixel_size, amp=1., angle=0., scale=1.):
         """Add pipette template z to *dst_arr* such that the tip is at *pip_pos* (row, col),
         ignoring non-overlapping areas.
 
@@ -82,10 +84,10 @@ class PipetteTemplate:
 
             # rotate offset position (rows, cols) around the center of the image
             template_pip_pos -= center1
-            rotation_matrix = [
+            rotation_matrix = np.array([
                 [np.cos(np.radians(angle)), -np.sin(np.radians(angle))],
                 [np.sin(np.radians(angle)), np.cos(np.radians(angle))],
-            ]
+            ])
             template_pip_pos = np.dot(rotation_matrix, template_pip_pos)
             template_pip_pos += center2
 
@@ -158,7 +160,7 @@ class NoiseData:
 
     def __init__(self, files):
         self.files = files
-        assert len(self.files) > 0, f"No noise files specified"
+        assert len(self.files) > 0, "No noise files specified"
         self.data = None
         self.meta = None
         self.lock = threading.Lock()
@@ -170,7 +172,7 @@ class NoiseData:
                 self.meta = []
                 for nf in self.files:
                     path, filename = os.path.split(nf)
-                    meta = yaml.safe_load(open(path + "/.index", "r"))[filename]
+                    meta = yaml.safe_load(open(f"{path}/.index", "r"))[filename]
                     self.data.append(MetaArray.MetaArray(file=nf).asarray())
                     self.meta.append(meta)
         return self.data, self.meta
@@ -208,6 +210,7 @@ class NoiseGenerator(NoiseData):
         self.noise_amplitudes = noise_amplitudes
         self.sin_shift = sin_shift
         self.noise_exponent = noise_exponent
+        super().__init__([])
 
     def get_noise(self, size: int, noise_amp: float):
         # structured noise to look like cells / neuropil
@@ -311,8 +314,6 @@ def make_training_data(
         Standard deviation of random angle in degrees to rotate the pipette
     pip_scale_exponent_stdev : float
         Standard deviation of random base-10 exponent to scale the pipette
-    img_scale_exponent_stdev : float
-        Standard deviation of random base-10 exponent to scale the final image
     source_size : int | tuple | None
         Size of the source image (width and height) to generate (before scaling to final size).
         Default is *size*
@@ -369,9 +370,9 @@ def make_training_data(
 # json serializer that can accept numpy int/float types
 class JSONEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, (np.integer)):
+        if isinstance(obj, np.integer):
             return int(obj)
-        elif isinstance(obj, (np.floating)):
+        elif isinstance(obj, np.floating):
             return float(obj)
         return json.JSONEncoder.default(self, obj)
 
@@ -429,11 +430,11 @@ if __name__ == "__main__":
     pos_file = os.path.join(args.path, "pos.csv")
     if os.path.exists(pos_file):
         last_line = open(pos_file).readlines()[-1]
-        img_count = int(last_line.split(",")[0].split(".")[0]) + 1
+        image_count = int(last_line.split(",")[0].split(".")[0]) + 1
     else:
-        img_count = 0
+        image_count = 0
 
-    if img_count >= args.size:
+    if image_count >= args.size:
         print("Already generated enough training data")
         exit()
 
@@ -446,7 +447,7 @@ if __name__ == "__main__":
     }
     threads = [TrainingDataGenerator(training_data_queue, training_data_args) for _ in range(args.threads)]
 
-    for i in tqdm(range(img_count, args.size)):
-        data = training_data_queue.get()
-        if np.isfinite(data[2]["snr"]):
-            save_training_data(args.path, i, *data)
+    for it in tqdm(range(image_count, args.size)):
+        training_data = training_data_queue.get()
+        if np.isfinite(training_data[2]["snr"]):
+            save_training_data(args.path, it, *training_data)
