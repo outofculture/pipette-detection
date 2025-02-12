@@ -1,0 +1,20 @@
+channels:
+  - defaults
+dependencies:
+  - python=3
+  - pip
+  - h5py
+  - pillow
+  - matplotlib
+  - jupyter
+  - pandas
+  - seaborn
+  - scipy
+  - numba
+  - scikit-image
+  - pywavelets
+  - scikit-learn
+  - pip:
+    - opencv-python-headless
+    - metaarray
+    - tqdm
